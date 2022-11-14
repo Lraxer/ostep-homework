@@ -220,3 +220,224 @@
    ```
 
 ## Code
+
+1. Write a program that calls `fork()` . Before calling `fork()` , have the main process access a variable (e.g., `x`) and set its value to something (e.g., `100`). What value is the variable in the child process? What happens to the variable when both the child and parent change the value of `x` ?
+
+   ```c
+   #include <stdio.h>
+   #include <stdlib.h>
+   #include <unistd.h>
+   
+   int main() {
+     int x = 0;
+     int child_pid;
+     x = 100;
+     if ((child_pid = fork()) > 0) {
+       x = 25;
+     } else if (child_pid == 0) {
+       x = 125;
+     } else {
+       printf("error\n");
+       exit(1);
+     }
+     printf("x=%d\n", x);
+   
+     return 0;
+   }
+   ```
+
+   两个值彼此互不影响。子进程获得父进程地址空间的一份副本，包括代码和数据段、堆、共享库、用户栈，以及打开的文件描述符。父进程和子进程最大的区别在于 PID 不同。
+
+2. Write a program that opens a file (with the `open()` system call) and then calls `fork()` to create a new process. Can both the child and parent access the file descriptor returned by `open()` ? What happens when they are writing to the file concurrently, i.e., at the same time?
+
+   ```c
+   #include <fcntl.h>
+   #include <stdio.h>
+   #include <stdlib.h>
+   #include <sys/stat.h>
+   #include <sys/types.h>
+   #include <unistd.h>
+   
+   int main() {
+     int child_pid;
+     int fd;
+   
+     fd = open("tmptmp.txt", O_RDWR, 0);
+   
+     if ((child_pid = fork()) > 0) {
+       write(fd, "this is from parent, no. 1\n", 28);
+       write(fd, "this is from parent, no. 2\n", 28);
+       write(fd, "this is from parent, no. 3\n", 28);
+     } else if (child_pid == 0) {
+       write(fd, "this is from child, no. 1\n", 27);
+       write(fd, "this is from child, no. 2\n", 27);
+       write(fd, "this is from child, no. 3\n", 27);
+       close(fd);
+     } else {
+       printf("error\n");
+       exit(1);
+     }
+     close(fd);
+     return 0;
+   }
+   ```
+
+   child 和 parent 都能访问 `open()` 返回的文件描述符。同时写入时，写入顺序是不固定的。
+
+3. Write another program using `fork()` . The child process should print “hello”; the parent process should print “goodbye”. You should try to ensure that the child process always prints first; can you do this without calling `wait()` in the parent?
+
+   我想出来的办法是 child 向 parent 发 SIGSTOP 或者 SIGTSTP ，然后 child 打印后再发 SIGCONT 。
+
+   ```c
+   #include <stdio.h>
+   #include <stdlib.h>
+   #include <sys/types.h>
+   #include <sys/wait.h>
+   #include <unistd.h>
+   
+   int main() {
+     int child_pid;
+     int parent_pid = getpid();
+   
+     if ((child_pid = fork()) > 0) {
+       kill(parent_pid, SIGSTOP);
+       printf("goodbyte\n");
+     } else if (child_pid == 0) {
+       printf("hello\n");
+       kill(parent_pid, SIGCONT);
+     } else {
+       printf("error\n");
+       exit(1);
+     }
+     return 0;
+   }
+   ```
+
+   但是这样还是会带一点额外输出。
+
+   ```
+   [1]  + 19679 suspended (signal)  ./tmpc
+   hello
+   goodbyte
+   [1]  + 19679 done       ./tmpc
+   ```
+
+   另一种方式是使用 pipe 。参考 https://github.com/asnr/ostep/blob/master/virtualisation/5_process_api/3_fork_and_coordinate_print.c 。
+
+4. Write a program that calls `fork()` and then calls some form of `exec()` to run the program `/bin/ls` . See if you can try all of the variants of `exec()` , including (on Linux) `execl()` , `execle() `, `execlp()` , `execv()` , `execvp()` , and `execvpe()` . Why do you think there are so many variants of the same basic call?
+
+   已经整理过，略。
+
+5. Now write a program that uses `wait()` to wait for the child process to finish in the parent. What does `wait()` return? What happens if you use `wait()` in the child?
+
+   ```c
+   #include <stdio.h>
+   #include <stdlib.h>
+   #include <sys/wait.h>
+   #include <unistd.h>
+   
+   int main() {
+     int child_pid;
+   
+     if ((child_pid = fork()) > 0) {
+       int ret_pid = wait(NULL);
+       printf("pid return from wait(): %d\n", ret_pid);
+       printf("goodbyte\n");
+     } else if (child_pid == 0) {
+       int my_pid = getpid();
+       printf("child pid: %d\n", my_pid);
+       printf("hello\n");
+     } else {
+       printf("error\n");
+       exit(1);
+     }
+     return 0;
+   }
+   ```
+
+   `wait()` 返回子进程的 PID 。
+
+   如果在 child 里面使用 `wait()` ，由于没有子进程，会返回 `-1` ，错误码为 `ECHILD` 。
+
+6. Write a slight modification of the previous program, this time using `waitpid()` instead of `wait()`. When would `waitpid()` be useful?
+
+   ```diff
+   - int ret_pid = wait(NULL);
+   + int ret_pid = waitpid(child_pid, NULL, 0);
+   ```
+
+   `wait(&status)` 相当于 `waitpid(-1， &status, 0)`  。 `waitpid()` 有更多的选项可以设置，以及能指定等待结束的子进程的 pid ，而不是等待所有子进程中的任意一个结束。
+
+7. Write a program that creates a child process, and then in the child closes standard output (`STDOUT_FILENO`). What happens if the child calls `printf()` to print some output after closing the descriptor?
+
+   ```c
+   #include <stdio.h>
+   #include <stdlib.h>
+   #include <sys/wait.h>
+   #include <unistd.h>
+   
+   int main() {
+     int child_pid;
+   
+     if ((child_pid = fork()) > 0) {
+       wait(NULL);
+       printf("child proc is exited.\n");
+     } else if (child_pid == 0) {
+       close(STDOUT_FILENO);
+       printf("after close STDOUT_FILENO, what happened?\n");
+     } else {
+       printf("error\n");
+       exit(1);
+     }
+     return 0;
+   }
+   ```
+
+   `close()` 后的 `printf` 不会输出任何东西。
+
+   别人写的更详细的答案：
+
+   > If the `printf` call is buffered, then `printf()` returns with no error, but the message is not printed to the terminal. If the `printf` call is *not* buffered, then `printf()` returns -1 (signaling that an error has occurred) and errno is set to 9, "bad file descriptor".
+
+8. Write a program that creates two children, and connects the standard output of one to the standard input of the other, using the `pipe()` system call.
+
+   ```c
+   #include <stdio.h>
+   #include <stdlib.h>
+   #include <unistd.h>
+   
+   int main() {
+     int child_pid1;
+     int pipe_fd[2];
+     pipe(pipe_fd);
+   
+     if ((child_pid1 = fork()) > 0) {
+       int child_pid2;
+       if ((child_pid2 = fork()) > 0) {
+         close(pipe_fd[0]);
+         close(pipe_fd[1]);
+       } else if (child_pid2 == 0) {
+         // child 2 only read
+         printf("hello from read proc!\n");
+         close(pipe_fd[1]);
+         dup2(pipe_fd[0], STDIN_FILENO);
+         char msg[100];
+         scanf("%[^\n]", msg);
+         printf("%s\n", msg);
+         close(pipe_fd[0]);
+       }
+     } else if (child_pid1 == 0) {
+       // child 1 only write
+       close(pipe_fd[0]);
+       dup2(pipe_fd[1], STDOUT_FILENO);
+       printf("write to other process\n");
+       close(pipe_fd[1]);
+     } else {
+       printf("error\n");
+       exit(1);
+     }
+     return 0;
+   }
+   ```
+
+   很多程序只是演示一下效果，并没有太注重安全性。注意 `pipe_fd[0]` 是用来读，`pipe_fd[1]` 是用来写的。
